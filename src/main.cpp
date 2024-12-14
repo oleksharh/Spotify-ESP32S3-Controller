@@ -2,6 +2,9 @@
  *Be sure to read the docs here: https://docs.lvgl.io/master/integration/framework/arduino.html  */
 
 #include <lvgl.h>
+// #include <lvgl/lvgl.h>
+
+#include "../.pio/libdeps/4d_systems_esp32s3_gen4_r8n16/lvgl/src/font/lv_font.h"
 
 #if LV_USE_TFT_ESPI
 #include <TFT_eSPI.h>
@@ -33,6 +36,125 @@ void my_print(lv_log_level_t level, const char *buf)
 }
 #endif
 
+// Variables to store current track information
+int current_track_duration = 0;
+int current_track_progress = 0;
+bool is_playing = false;
+int http_error_count = 0;
+const int max_error_count = 3;
+String current_track_img_url = "";
+
+// LVGL objects for the display
+lv_obj_t *img_cover;                      // Image widget for the album cover
+lv_obj_t *label_title;                    // Label widget for the song title
+lv_obj_t *label_artist;                   // Label widget for the artist name
+lv_obj_t *playback_bar;                   // Slider widget for the playback bar
+lv_obj_t *btn_play, *btn_next, *btn_prev; // Media control buttons
+
+void create_ui()
+{
+  // Create the main screen
+  lv_obj_t *screen = lv_scr_act();
+  lv_obj_set_style_bg_color(screen, lv_color_hex(0x202020), 0); // Dark gray background
+  lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+
+  // Create a container for the song attributes section
+  lv_obj_t *song_container = lv_obj_create(screen);
+  lv_obj_set_size(song_container, LV_PCT(100), LV_PCT(60)); // Top half of the screen
+  lv_obj_set_flex_flow(song_container, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_radius(song_container, 0, 0); // Remove rounded edges
+  lv_obj_set_style_bg_color(song_container, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_border_width(song_container, 0, 0); // Remove border
+  lv_obj_align(song_container, LV_ALIGN_TOP_MID, 0, 0);
+
+  // Add the album cover (placeholder for now)
+  img_cover = lv_img_create(song_container);
+  lv_img_set_src(img_cover, "");        // Replace with the album image path
+  lv_obj_set_size(img_cover, 128, 128); // Example size
+
+  // Create a container for the song title and artist section
+  lv_obj_t *song_subcontainer = lv_obj_create(song_container);
+  lv_obj_set_size(song_subcontainer, LV_PCT(70), LV_PCT(90)); // Remaining space for text
+  lv_obj_set_flex_flow(song_subcontainer, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_radius(song_subcontainer, 0, 0);
+  lv_obj_set_style_bg_opa(song_subcontainer, LV_OPA_TRANSP, 0); // Transparent background
+  lv_obj_align(song_subcontainer, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_set_scrollbar_mode(song_subcontainer, LV_SCROLLBAR_MODE_OFF); // No scrollbars
+  lv_obj_clear_flag(song_subcontainer, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Add song title
+  // label_title = lv_label_create(song_subcontainer);
+  // lv_label_set_text(label_title, "Song Title with a Long Name Example");
+  // lv_obj_set_style_text_color(label_title, lv_color_white(), 0); // White text
+  // lv_obj_set_style_text_font(label_title, &lv_font_montserrat_22, 0);
+  // lv_obj_set_style_text_align(label_title, LV_TEXT_ALIGN_LEFT, 0);
+  // lv_label_set_long_mode(label_title, LV_LABEL_LONG_WRAP); // Enable text wrapping
+
+  // Add song title
+  label_title = lv_label_create(song_subcontainer);
+  lv_label_set_text(label_title, "Song Title with a Long Name Example");
+  lv_obj_set_style_text_color(label_title, lv_color_white(), 0); // White text
+  lv_obj_set_style_text_font(label_title, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_align(label_title, LV_TEXT_ALIGN_LEFT, 0);
+
+  // Enable text wrapping and allow the label to expand vertically
+  lv_label_set_long_mode(label_title, LV_LABEL_LONG_WRAP); // Enable text wrapping
+
+  // Ensure the label container is flexible and allows wrapping
+  lv_obj_set_size(label_title, LV_PCT(100), LV_SIZE_CONTENT); // Let the label expand vertically
+
+  // Add artist name
+  label_artist = lv_label_create(song_subcontainer);
+  lv_label_set_text(label_artist, "Artist Name");
+  lv_obj_set_style_text_color(label_artist, lv_color_white(), 0);
+  // lv_obj_set_style_text_font(label_artist, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_text_align(label_artist, LV_TEXT_ALIGN_LEFT, 0);
+  lv_label_set_long_mode(label_artist, LV_LABEL_LONG_WRAP); // Enable text wrapping
+
+  // Create a container for media controls
+  lv_obj_t *media_container = lv_obj_create(screen);
+  lv_obj_set_size(media_container, LV_PCT(100), LV_PCT(40)); // Bottom half of the screen
+  lv_obj_set_flex_flow(media_container, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_radius(media_container, 0, 0); // Remove rounded edges
+  lv_obj_set_style_bg_color(media_container, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_border_width(media_container, 0, 0); // Remove border
+  lv_obj_align(media_container, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_scrollbar_mode(media_container, LV_SCROLLBAR_MODE_OFF); // No scrollbars
+
+  // Add playback bar
+  playback_bar = lv_slider_create(media_container);
+  lv_obj_set_width(playback_bar, LV_PCT(100));
+  lv_slider_set_range(playback_bar, 0, 100); // 0 to 100% playback
+  lv_obj_set_style_bg_color(playback_bar, lv_color_hex(0x404040), 0);
+  lv_obj_set_style_bg_grad_color(playback_bar, lv_color_hex(0x404040), 0);
+
+  // Add media control buttons in a horizontal layout
+  lv_obj_t *btn_container = lv_obj_create(media_container);
+  lv_obj_set_flex_flow(btn_container, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_gap(btn_container, 10, 0);
+  lv_obj_set_style_radius(btn_container, 0, 0); // Remove rounded edges
+  lv_obj_set_size(btn_container, LV_PCT(100), LV_PCT(85));
+  lv_obj_set_style_bg_opa(btn_container, LV_OPA_TRANSP, 0);
+
+  // Add "Previous" button
+  btn_prev = lv_btn_create(btn_container);
+  lv_obj_set_size(btn_prev, 50, 50);
+  lv_obj_t *label_prev = lv_label_create(btn_prev);
+  lv_label_set_text(label_prev, "⏮"); // Previous icon
+
+  // Add "Play/Pause" button
+  btn_play = lv_btn_create(btn_container);
+  lv_obj_set_size(btn_play, 50, 50);
+  lv_obj_t *label_play = lv_label_create(btn_play);
+  lv_label_set_text(label_play, "▶"); // Play icon
+
+  // Add "Next" button
+  btn_next = lv_btn_create(btn_container);
+  lv_obj_set_size(btn_next, 50, 50);
+  lv_obj_t *label_next = lv_label_create(btn_next);
+  lv_label_set_text(label_next, "⏭"); // Next icon
+}
+
 /* LVGL calls it when a rendered image needs to copied to the display*/
 void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
@@ -48,24 +170,6 @@ void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 
   /*Call it to tell LVGL you are ready*/
   lv_display_flush_ready(disp);
-}
-
-/*Read the touchpad*/
-void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
-{
-  /*For example  ("my_..." functions needs to be implemented by you)
-  int32_t x, y;
-  bool touched = my_get_touch( &x, &y );
-
-  if(!touched) {
-      data->state = LV_INDEV_STATE_RELEASED;
-  } else {
-      data->state = LV_INDEV_STATE_PRESSED;
-
-      data->point.x = x;
-      data->point.y = y;
-  }
-   */
 }
 
 /*use Arduinos millis() as tick source*/
@@ -182,7 +286,6 @@ void setup()
   /*Initialize the (dummy) input device driver*/
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER); /*Touchpad should have POINTER type*/
-  lv_indev_set_read_cb(indev, my_touchpad_read);
 
   /* Create a simple label
    * ---------------------
@@ -209,7 +312,8 @@ void setup()
   lv_label_set_text(label, "Hello Arduino, I'm LVGL!");
   lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
   // lv_example_button_1();
-  lv_example_bar_1();
+  // lv_example_bar_1();
+  create_ui();
 
   Serial.println("Setup done");
 }
